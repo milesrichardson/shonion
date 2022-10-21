@@ -26,6 +26,63 @@ compile Tor into a Rust crate and library that can be compiled to a static execu
 
 boom, full-featured ssh session in a remote machine
 
+## Link it
+
+If you are using a platform with a binary checked into `bin`, then you don't
+need to build it. Instead, just run `link.sh` to create a symlink at `shonion`
+in the repo root.
+
+```bash
+./link.sh
+```
+
+## Build it
+
+Build static and dynamic versions
+
+```bash
+# Build both dynamic and static target
+./scripts/build-all.sh
+
+# Only static:
+./scripts/build.sh
+
+# Only dynamic
+BUILD_DYNAMIC=1 BUILD_STATIC=0 ./scripts/build.sh
+```
+
+Move those new versions into `bin/{static,dynamic}/{host_arch}/shonion`
+
+(also temporarily stage each file to show its diff, but don't commit)
+
+```bash
+./scripts/stage-release.sh
+```
+
+Stage those changes again, but actually commit them this time:
+
+```bash
+./scripts/stage-release.sh --commit
+```
+
+## Troubleshooting / Other Scripts
+
+Check your host triple (requires `rustc`):
+
+```sh
+./scripts/get-host-triple.sh
+```
+
+Find the `bin/{static,dynamic}/shonion` executable:
+
+```sh
+./scripts/get-shonion-executable.sh static
+# -> bin/static/x86_64-apple-darwin/shonion
+
+./scripts/get-shonion-executable.sh dynamic
+# -> bin/dynamic/x86_64-apple-darwin/shonion
+```
+
 ## Similar
 
 This is not a new idea. Here are some other similar projects:
