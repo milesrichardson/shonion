@@ -16,7 +16,7 @@ main() {
   echo  "  -> $(pwd)/$SHONION"
 
   set -x
-  echo ln -s "$SHONION" shonion
+  ln -s "$SHONION" shonion
   set +x
 
   echo  "Success, try it:"
