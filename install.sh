@@ -5,12 +5,18 @@ mkdir -p "$SHONION_HOME_DIR"
 
 SHONION_BIN="${SHONION_BIN}"
 SHONION_REPO="${SHONION_REPO-"https://github.com/milesrichardson/shonion"}"
+SHONION_SCRIPT_PATH="$(pwd)/install.sh"
+SHONION_SCRIPT_ADDR="${SHONION_REPO}/blob/main/install.sh?raw=true"
 SHONION_BIN_URL="${SHONION_BIN_URL}"
 SHONION_BUILD_DIR="${SHONION_BUILD_DIR-"$HOME/.shonion"}"
 SHONION_UPDATE="${SHONION_UPDATE-"0"}"
 SHONION_FORK_TO_CLIENT="${SHONION_FORK_TO_CLIENT-"0"}"
 SHONION_FORK_TO_LISTENER="${SHONION_FORK_TO_LISTENER-"0"}"
 SHONION_LISTENER_ROOT="${SHONION_LISTENER_ROOT-""}"
+SHONION_CLIENT_ROOT="${SHONION_CLIENT_ROOT-""}"
+SHONION_TORRC="${SHONION_TORRC-""}"
+
+SHONION_STDOUT="$SHONION_BUILD_DIR/shonion.stdout.log"
 
 SHONION_TOR_ROOT="/tmp/tor-rust"
 
@@ -21,45 +27,87 @@ main() {
 }
 
 fork_to_work() {
+  _require_dep "nc" "netcat"
+
   if _should_fork_to_listener ; then
+    _require_dep "sshd" "openssh-server"
+
     _fork_to_listener
   elif _should_fork_to_client ; then
+    _require_dep "ssh" "openssh-client"
+
     _fork_to_client
   else
-    _log "Not forking to any new process"
+    _log "Not forking to any new process."
     _log "      to fork to client: SHONION_FORK_TO_CLIENT=1 $0"
+    _log "                     or: $0 --client"
+    _log ""
     _log "    to fork to listener: SHONION_FORK_TO_LISTENER=1 $0"
+    _log "                     or:    $0 --listener"
   fi
 }
 
-# _wait_for_shutdown() {
-#   until [ -f "$hostname_file" ]
-#   do
-#       sleep 5
-#   done
-# }
-
 PID_SHONION=
+PID_SHONION_LOGTAIL=
 _cleanup() {
   echo "Kill Shonion ($PID_SHONION)"
-  kill -9 "$PID_SHONION" || true
+  kill "$PID_SHONION" || kill -9 "$PID_SHONION" || true
 
-  echo "KILL SSHD FROM" "$SHONION_LISTENER_ROOT"/sshd.pid
+  echo "Kill Shonion Log Tailer ($PID_SHONION_LOGTAIL)"
+  kill "$PID_SHONION_LOGTAIL" || kill -9 "$PID_SHONION_LOGTAIL" || true
+
+  echo "Kill SSHD from from PID file:" "$SHONION_LISTENER_ROOT"/sshd.pid
   xargs kill -9 < "$SHONION_LISTENER_ROOT"/sshd.pid || true
+}
+
+_run_shonion_in_background() {
+
+  if test -f "$SHONION_STDOUT" ; then
+    echo "deleting existing log file at $SHONION_STDOUT"
+    rm "$SHONION_STDOUT"
+  fi
+
+  if test -z "$SHONION_TORRC" ; then
+    SHONION_TORRC="$HOME/.torrc"
+  fi
+
+  if test ! -f "$SHONION_TORRC" ; then
+    SHONION_TORRC="$(mktemp)"
+    _log "temporary .torrc: $SHONION_TORRC"
+    echo "" >> "$SHONION_TORRC"
+  fi
+
+  "$SHONION_BIN" --config "$SHONION_TORRC" > "$SHONION_STDOUT" 2>&1 &
+  PID_SHONION=$!
+
+  tail -f "$SHONION_STDOUT" &
+  PID_SHONION_LOGTAIL=$!
+
+  trap 'echo CLEANUP shonion and logtail ; kill $PID_SHONION || kill -9 $PID_SHONION || true ; kill -9 $PID_SHONION_LOGTAIL || true ;' EXIT
 }
 
 _fork_to_listener() {
   _log "[TODO] forking to listener ...."
 
-  "$SHONION_BIN" &
-  PID_SHONION=$!
-  trap 'echo CLEANUP shonion pid $PID_SHONION ; kill $PID_SHONION' INT
+  _setup_listener_dir
+
+  _run_shonion_in_background
 
   _wait_for_onion_hostname
 
-  _setup_listener_dir
+  _compile_client_script
 
-  /usr/sbin/sshd \
+  _log "sshd.pid: $SHONION_LISTENER_ROOT/sshd.pid"
+
+  _wait_for_tor_bootstrap
+
+  _print_client_instructions
+
+  _wait_for_tor_clearnet
+
+  _wait_for_own_onion_service
+
+  /usr/sbin/sshd -d \
 -o Port=5678 \
 -o StrictModes=no \
 -o HostKey="$SHONION_LISTENER_ROOT"/ssh_host_rsa_key \
@@ -69,10 +117,6 @@ _fork_to_listener() {
 -o PasswordAuthentication=no \
 -o UsePAM=yes \
 -o AuthorizedKeysFile="$SHONION_LISTENER_ROOT"/authorized_keys
-
-  _log "sshd.pid: $SHONION_LISTENER_ROOT/sshd.pid"
-
-  _print_client_instructions
 
   wait "$PID_SHONION"
 
@@ -90,12 +134,51 @@ _wait_for_onion_hostname() {
   _log "found hostname: $(_get_onion_hostname)"
 }
 
-# _wait_for_tor_network() {
-#   _log "Wait for Tor network to be up ..."
-#   until [ -n "$()" ]
-#   do
-#       sleep 5
-#   done
+_wait_for_tor_bootstrap() {
+  while ! grep -q 'Bootstrapped 100%' "$SHONION_STDOUT" ; do
+    _log "waiting for tor bootstrap..."
+    sleep 5
+  done
+
+  cat "$SHONION_STDOUT"
+}
+
+_wait_for_own_onion_service() {
+  onion_hostname="$(_get_onion_hostname)"
+  onion_port=34567
+
+  proxy_to_host=127.0.0.1
+  proxy_to_port=5678
+
+  nc -l "$proxy_to_host" "$proxy_to_port" &
+  PID_NC_LISTENER=$!
+
+  sentinel_dir="$(mktemp -d)"
+  until [ -f "$sentinel_dir/success.txt" ]
+  do
+    _log "wait for netcat to resolve $onion_hostname $onion_port"
+    nc -w 10 -tvz -x 127.0.0.1:19050 -X 5 "$onion_hostname" "$onion_port" && touch "$sentinel_dir/success.txt"
+    sleep 5
+  done
+
+  kill -9 "$PID_NC_LISTENER" || true
+
+  _log "ok, $onion_hostname $onion_port looks up"
+}
+
+_wait_for_tor_clearnet() {
+  _log "Wait for Tor network to be up ..."
+  sentinel_dir="$(mktemp -d)"
+  until [ -f "$sentinel_dir/success.txt" ]
+  do
+      curl -q --socks5-hostname 127.0.0.1:19050 https://www.cloudflare.com/cdn-cgi/trace && touch "$sentinel_dir/success.txt"
+      sleep 5
+  done
+}
+
+# _wait_for_tor_onion() {
+#   echo "[todo] sleep 240..."
+#   sleep 240
 # }
 
 _get_onion_hostname() {
@@ -104,6 +187,30 @@ _get_onion_hostname() {
 
 _fork_to_client() {
   _log "[TODO] forking to client ...."
+  _run_shonion_in_background
+
+  test -d "$SHONION_CLIENT_ROOT" || _fatal "forked to client without defined SHONION_CLIENT_ROOT"
+  cd "$SHONION_CLIENT_ROOT" || _fatal "failed cd $SHONION_CLIENT_ROOT"
+
+  _wait_for_tor_bootstrap
+
+  # _wait_for_tor_clearnet
+
+  # _wait_for_tor_onion
+
+  _wait_for_tor_clearnet
+
+  _wait_for_own_onion_service
+
+  exec ssh -v \
+    -F /dev/null \
+    -o IdentityFile="$(pwd)"/id_shonion_client_rsa \
+    -o IdentitiesOnly=yes \
+    -o ConnectTimeout=120 \
+    -o StrictHostKeychecking=no \
+    -o UserKnownHostsFile=/dev/null \
+    -o "proxyCommand=nc -x 127.0.0.1:19050 -X 5 %h %p" \
+"$SHONION_CLIENT_SSH_USER"@"$SHONION_CLIENT_DEST_ONION_HOST" -p "$SHONION_CLIENT_DEST_ONION_PORT"
 }
 
 _setup_listener_dir() {
@@ -115,14 +222,20 @@ _setup_listener_dir() {
 
   _log "[LISTENER ROOT] $SHONION_LISTENER_ROOT"
 
-  trap '_cleanup' INT
+  trap '_cleanup' EXIT
 
-  _compile_client_script
+  echo "UseEntryGuards 0" >> "$SHONION_LISTENER_ROOT/.torrc"
+  SHONION_TORRC="$SHONION_LISTENER_ROOT/.torrc"
 
-  _log "[CLIENT SCRIPT]" "$SHONION_LISTENER_ROOT/connect.sh"
-  _log "---"
-  cat "$SHONION_LISTENER_ROOT/connect.sh"
-  _log "---"
+  echo "CWD IS: $(pwd)"
+  cd "$SHONION_LISTENER_ROOT" || _fatal "failed cd $SHONION_LISTENER_ROOT"
+
+  touch sshd.pid \
+  && ssh-keygen -f id_shonion_client_rsa -N '' \
+  && cat id_shonion_client_rsa.pub > authorized_keys \
+  && ssh-keygen -f ssh_host_rsa_key -N ''
+
+  cd - || _fatal "failed cd back"
 }
 
 _print_client_instructions() {
@@ -141,15 +254,13 @@ _compile_client_script() {
   cd "$SHONION_LISTENER_ROOT" || _fatal "failed cd $SHONION_LISTENER_ROOT"
   echo "CWD IS: $(pwd)"
 
-  touch sshd.pid \
-  && ssh-keygen -f id_shonion_client_rsa -N '' \
-  && cat id_shonion_client_rsa.pub > authorized_keys \
-  && ssh-keygen -f ssh_host_rsa_key -N ''
-
 cat <<EOC > "$SHONION_LISTENER_ROOT/connect.sh"
 #!/usr/bin/env bash
 
-cd \$(mktemp -d)
+set +m
+
+export SHONION_CLIENT_ROOT="\$(mktemp -d)"
+cd \$SHONION_CLIENT_ROOT
 
 tee id_shonion_client_rsa <<EOX
 $(cat id_shonion_client_rsa)
@@ -161,16 +272,37 @@ EOX
 
 chmod 0400 id_shonion_client_rsa id_shonion_client_rsa.pub
 
-exec ssh -v \\
-    -F /dev/null \\
-    -o IdentityFile=\$PWD/id_shonion_client_rsa \\
-    -o IdentitiesOnly=yes \\
-    -o ConnectTimeout=120 \\
-    -o StrictHostKeychecking=no \\
-    -o UserKnownHostsFile=/dev/null \\
-    -o "proxyCommand=nc -x 127.0.0.1:19050 -X 5 %h %p" \\
-$(whoami)@$(cat /tmp/tor-rust/hs-dir/hostname) -p 34567
+if test -f "\$SHONION_SCRIPT_PATH" ; then
+  existing_path="\$SHONION_SCRIPT_PATH"
+fi
+
+export SHONION_SCRIPT_PATH="\$(mktemp -d)/shonion.sh"
+
+if test -n "\$existing_path" ; then
+  echo "copy existing \$existing_path to \$SHONION_SCRIPT_PATH"
+  cp "\$existing_path" "\$SHONION_SCRIPT_PATH"
+fi
+
+if ! test -f "\$SHONION_SCRIPT_PATH" ; then
+  curl -L "$SHONION_SCRIPT_ADDR" -o "\$SHONION_SCRIPT_PATH" || exit 1
+  #scp developer-machine-when-wip:$SHONION_SCRIPT_PATH "\$SHONION_SCRIPT_PATH"
+fi
+
+if ! test -x "\$SHONION_SCRIPT_PATH" ; then
+  chmod +x "\$SHONION_SCRIPT_PATH"
+fi
+
+export SHONION_CLIENT_SSH_USER=$(whoami)
+export SHONION_CLIENT_DEST_ONION_HOST=$(cat /tmp/tor-rust/hs-dir/hostname)
+export SHONION_CLIENT_DEST_ONION_PORT=34567
+
+exec "\$SHONION_SCRIPT_PATH" --connect "\$@"
 EOC
+
+  _log "[CLIENT SCRIPT]" "$SHONION_LISTENER_ROOT/connect.sh"
+  _log "---"
+  cat "$SHONION_LISTENER_ROOT/connect.sh"
+  _log "---"
 
   cd - || _fatal "failed cd back"
   echo "CWD IS: $(pwd)"
@@ -206,6 +338,12 @@ _validate_env() {
     _fatal "cannot fork to both client and server"
   fi
 
+  if _should_fork_to_client ; then
+    test -n "$SHONION_CLIENT_SSH_USER" || _fatal "missing SHONION_CLIENT_SSH_USER"
+    test -n "$SHONION_CLIENT_DEST_ONION_HOST"  || _fatal "missing SHONION_CLIENT_DEST_ONION_HOST"
+    test -n "$SHONION_CLIENT_DEST_ONION_PORT"  || _fatal "missing SHONION_CLIENT_DEST_ONION_PORT"
+  fi
+
 }
 
 _dump_env() {
@@ -216,7 +354,7 @@ _dump_env() {
   echo "SHONION_UPDATE=$SHONION_UPDATE"
   echo "SHONION_FORK_TO_LISTENER=$SHONION_FORK_TO_LISTENER"
   echo "SHONION_FORK_TO_CLIENT=$SHONION_FORK_TO_CLIENT"
-  echo "SHONION_LISTEN_ROOT=$SHONION_LISTEN_ROOT"
+  echo "SHONION_LISTENER_ROOT=$SHONION_LISTENER_ROOT"
 }
 
 _require_deps() {
@@ -360,7 +498,7 @@ _configure() {
   fi
 
   _arch_url() {
-    echo "https://github.com/milesrichardson/shonion/blob/main/bin/static/$1/shonion?raw=true"
+    echo "$SHONION_REPO/blob/main/bin/static/$1/shonion?raw=true"
   }
 
   _unknown_arch() {
