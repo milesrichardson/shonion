@@ -9,7 +9,7 @@ struct Args {
     proxy_to_host: String,
 
     /// Port of the destination service to expose to the Tor network
-    #[arg(long = "to-port")]
+    #[arg(long = "to-port", default_value = "5678")]
     proxy_to_port: u16,
 
     /// Port to open on the hidden service (blahblah.onion:<tport>)
