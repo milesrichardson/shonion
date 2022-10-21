@@ -1,0 +1,17 @@
+[package]
+name = "shonion"
+version = "0.1.0"
+edition = "2021"
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+# https://github.com/MagicalBitcoin/libtor-sys
+
+[dependencies]
+clap = { version = "4.0.17", features = ["derive"] }
+console = "0.15.2"
+libtor = { git = "https://github.com/MagicalBitcoin/libtor", rev = "1c32871a3ed56093ad9fd1aa994fbb05b1df49f3" }
+libtor-sys = "^47.10"
+
+[features]
+xplat = ["libtor-sys/vendored-openssl", "libtor-sys/vendored-lzma", "libtor-sys/vendored-zstd"]
