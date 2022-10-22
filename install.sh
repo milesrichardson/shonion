@@ -93,7 +93,7 @@ _run_shonion_in_background() {
 }
 
 _fork_to_listener() {
-  _log "[TODO] forking to listener ...."
+  _log "[LISTENER] forking to listener ...."
 
   _setup_listener_dir
 
@@ -106,22 +106,20 @@ _fork_to_listener() {
   _log "sshd.pid: $SHONION_LISTENER_ROOT/sshd.pid"
 
   _wait_for_tor_bootstrap
-
+  _wait_for_tor_clearnet
+  _wait_for_own_onion_service
   _print_client_instructions
 
-  _wait_for_tor_clearnet
-
-  _wait_for_own_onion_service
-
-  /usr/sbin/sshd -d \
--o Port=5678 \
+  /usr/sbin/sshd -f /dev/null -e -D \
+-o ListenAddress=127.0.0.1:5678 \
 -o StrictModes=no \
 -o HostKey="$SHONION_LISTENER_ROOT"/ssh_host_rsa_key \
 -o PidFile="$SHONION_LISTENER_ROOT"/sshd.pid \
+-o AuthenticationMethods=publickey \
 -o KbdInteractiveAuthentication=no \
 -o ChallengeResponseAuthentication=no \
 -o PasswordAuthentication=no \
--o UsePAM=yes \
+-o UsePAM=no \
 -o AuthorizedKeysFile="$SHONION_LISTENER_ROOT"/authorized_keys
 
   wait "$PID_SHONION"
@@ -132,86 +130,76 @@ _fork_to_listener() {
 
 _wait_for_onion_hostname() {
   hostname_file="$SHONION_TOR_ROOT/hs-dir/hostname"
-  _log "Wait for .onion hostname: $hostname_file ..."
+  _log "[WAIT] for generated .onion hostname: $hostname_file ..."
   until [ -f "$hostname_file" ]
   do
-      sleep 5
+    _log "[WAIT] for $hostname_file ..."
+    sleep 5
   done
-  _log "found hostname: $(_get_onion_hostname)"
+  _log "[OK] found hostname: $(_get_onion_hostname)"
 }
 
 _wait_for_tor_bootstrap() {
   while ! grep -q 'Bootstrapped 100%' "$SHONION_STDOUT" ; do
-    _log "waiting for tor bootstrap..."
+    _log "[WAIT] for tor bootstrap..."
     sleep 5
   done
 
-  cat "$SHONION_STDOUT"
+  _log "[OK] Tor bootstrapped"
 }
 
 _wait_for_own_onion_service() {
   onion_hostname="$(_get_onion_hostname)"
   onion_port=34567
 
-  proxy_to_host=127.0.0.1
-  proxy_to_port=5678
-
-  nc -l "$proxy_to_host" "$proxy_to_port" &
-  PID_NC_LISTENER=$!
-
+  _log "[WAIT] checking onion network connectivity back to self..."
+  _log "[WAIT] this might take a few minutes (retry interval is 120 seconds)"
   sentinel_dir="$(mktemp -d)"
   until [ -f "$sentinel_dir/success.txt" ]
   do
-    _log "wait for netcat to resolve $onion_hostname $onion_port"
-    nc -w 10 -tvz -x 127.0.0.1:19050 -X 5 "$onion_hostname" "$onion_port" && touch "$sentinel_dir/success.txt"
+    _log "[WAIT] check nc back to localhost via $onion_hostname $onion_port"
+    _check_self_onion && touch "$sentinel_dir/success.txt"
     sleep 5
   done
 
-  kill -9 "$PID_NC_LISTENER" || true
-
-  _log "ok, $onion_hostname $onion_port looks up"
+  _log "[OK] $onion_hostname $onion_port looks up (that's us, via 6 proxies)"
 }
 
+# note: assumes hardcoded port numbers from shonion defaults (same as other places in this script)
 _check_self_onion() {
-  start=$(date +%s) ; (nc -vrl 127.0.0.1 5678 & ) \
+  start=$(date +%s) ; NC_PID="$(nc -vrl 127.0.0.1 5678 >/dev/null 2>/dev/null & echo $! )" \
     && nc -tvz -x 127.0.0.1:19050 -X 5 "$(cat /tmp/tor-rust/hs-dir/hostname)" 34567 \
     && echo "success in $(($(date +%s)-start)) seconds" \
-    && return 0
+    && { kill "$NC_PID" || true ; } && return 0
 
   return 1
 }
 
 _wait_for_tor_clearnet() {
-  _log "Wait for Tor network to be up ..."
+  _log "[WAIT] for Tor network clearnet reachability ..."
   sentinel_dir="$(mktemp -d)"
   until [ -f "$sentinel_dir/success.txt" ]
   do
+      _log "[WAIT] send HTTP GET via SOCKS proxy to https://www.cloudflare.com/cdn-cgi/trace"
       curl -q --socks5-hostname 127.0.0.1:19050 https://www.cloudflare.com/cdn-cgi/trace && touch "$sentinel_dir/success.txt"
       sleep 5
   done
-}
 
-# _wait_for_tor_onion() {
-#   echo "[todo] sleep 240..."
-#   sleep 240
-# }
+  _log "[OK] clearnet is reachable via SOCKS proxy"
+}
 
 _get_onion_hostname() {
   cat "$SHONION_TOR_ROOT/hs-dir/hostname"
 }
 
 _fork_to_client() {
-  _log "[TODO] forking to client ...."
+  _log "[CLIENT] forking to client ...."
   _run_shonion_in_background
 
   test -d "$SHONION_CLIENT_ROOT" || _fatal "forked to client without defined SHONION_CLIENT_ROOT"
   cd "$SHONION_CLIENT_ROOT" || _fatal "failed cd $SHONION_CLIENT_ROOT"
 
   _wait_for_tor_bootstrap
-
-  # _wait_for_tor_clearnet
-
-  # _wait_for_tor_onion
 
   _wait_for_tor_clearnet
 
@@ -251,16 +239,34 @@ _setup_listener_dir() {
   && ssh-keygen -f ssh_host_rsa_key -N ''
 
   cd - || _fatal "failed cd back"
+
+  # sshd "privilege separation directory" is non-configurable location /run/sshd
+  # on systems that haven't yet had sshd installed (like many docker containers)
+  # this doesn't exist yet, and so we create it. but it needs to be owned by root
+  if ! test -d /run/sshd ; then
+    if test "$(whoami)" == "root" ; then
+      mkdir -p /run/sshd || true
+    elif _userland_sudoer ; then
+      sudo mkdir -p /run/sshd || { _log "WARN: no /run/sshd directory, sshd might fail to start" ; }
+    fi
+  fi
+
+  if ! test -d /run/sshd ; then
+    _log "WARN: no /run/sshd found, which might cause sshd to fail"
+  fi
 }
 
 _print_client_instructions() {
   echo
-  _log "Listening..."
+  _log "Ready! Launching sshd to listen on $(cat /tmp/tor-rust/hs-dir/hostname):3456"
   _log "To connect from another machine, paste this into a terminal:"
+  _log "----"
 
   tee <<EOC
-bash <(echo "$(base64 -w0 "$SHONION_LISTENER_ROOT"/connect.sh)" | base64 -D)
+bash <(echo "$(base64 -w0 "$SHONION_LISTENER_ROOT"/connect.sh)" | base64 -d)
 EOC
+
+  _log "---- Note: Some distributions use base64 -D (capitalized)"
 }
 
 _compile_client_script() {
