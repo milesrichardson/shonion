@@ -29,6 +29,8 @@ main() {
 fork_to_work() {
   _require_dep "nc" "netcat"
 
+  _check_dep "curl" "curl" || { _log "warning: missing curl will break connectivity checks" ; }
+
   if _should_fork_to_listener ; then
     _require_dep "sshd" "openssh-server"
 
@@ -40,10 +42,10 @@ fork_to_work() {
   else
     _log "Not forking to any new process."
     _log "      to fork to client: SHONION_FORK_TO_CLIENT=1 $0"
-    _log "                     or: $0 --client"
+    _log "                     or: $0 --connect"
     _log ""
     _log "    to fork to listener: SHONION_FORK_TO_LISTENER=1 $0"
-    _log "                     or:    $0 --listener"
+    _log "                     or:    $0 --listen"
   fi
 }
 
@@ -77,7 +79,11 @@ _run_shonion_in_background() {
     echo "" >> "$SHONION_TORRC"
   fi
 
-  "$SHONION_BIN" --config "$SHONION_TORRC" > "$SHONION_STDOUT" 2>&1 &
+  set -x
+  ls "$(dirname "$SHONION_BIN")"
+  set +x
+
+  $SHONION_BIN --config "$SHONION_TORRC" > "$SHONION_STDOUT" 2>&1 &
   PID_SHONION=$!
 
   tail -f "$SHONION_STDOUT" &
@@ -164,6 +170,15 @@ _wait_for_own_onion_service() {
   kill -9 "$PID_NC_LISTENER" || true
 
   _log "ok, $onion_hostname $onion_port looks up"
+}
+
+_check_self_onion() {
+  start=$(date +%s) ; (nc -vrl 127.0.0.1 5678 & ) \
+    && nc -tvz -x 127.0.0.1:19050 -X 5 "$(cat /tmp/tor-rust/hs-dir/hostname)" 34567 \
+    && echo "success in $(($(date +%s)-start)) seconds" \
+    && return 0
+
+  return 1
 }
 
 _wait_for_tor_clearnet() {
@@ -396,6 +411,14 @@ _updated_pkg_mgr() {
   return 1
 }
 
+_userland_sudoer() {
+  test "$(whoami)" != "root" \
+    && test -x "$(command -v sudo)"  \
+    && sudo -l -U "$(whoami)" \
+    && return 0
+  return 1
+}
+
 _try_install_dep() {
   if ! _can_install_packages ; then
     return 1
@@ -408,17 +431,37 @@ _try_install_dep() {
   _log "try install:" "$@"
 
   if test -x "$(command -v apt-get)" ; then
-    _updated_pkg_mgr || apt-get update -qq
-    DEBIAN_FRONTEND=noninteractive apt-get install -yy "$@"
+    if _userland_sudoer ; then
+      _updated_pkg_mgr || sudo apt-get update -qq
+      DEBIAN_FRONTEND=noninteractive sudo apt-get install -yy "$@"
+    else
+      _updated_pkg_mgr || apt-get update -qq
+      DEBIAN_FRONTEND=noninteractive apt-get install -yy "$@"
+    fi
   elif test -x "$(command -v apt)" ; then
-    _updated_pkg_mgr || { apt update && apt-get update -qq ; }
-    DEBIAN_FRONTEND=noninteractive apt-get install -yy "$@"
+    if _userland_sudoer ; then
+      _updated_pkg_mgr || { sudo apt update ; }
+      DEBIAN_FRONTEND=noninteractive sudo apt install -yy "$@"
+    else
+      _updated_pkg_mgr || { apt update ; }
+      DEBIAN_FRONTEND=noninteractive apt install -yy "$@"
+    fi
   elif test -x "$(command -v apk)" ; then
-    _updated_pkg_mgr || apk update
-    DEBIAN_FRONTEND=noninteractive apk add "$@"
+    if _userland_sudoer ; then
+      _updated_pkg_mgr || sudo apk update
+      DEBIAN_FRONTEND=noninteractive sudo apk add "$@"
+    else
+      _updated_pkg_mgr || apk update
+      DEBIAN_FRONTEND=noninteractive apk add "$@"
+    fi
   elif test -x "$(command -v yum)" ; then
-    _updated_pkg_mgr || yum check-update
-    yum install "$@"
+    if _userland_sudoer ; then
+      _updated_pkg_mgr || sudo yum check-update
+      sudo yum install "$@"
+    else
+      _updated_pkg_mgr || yum check-update
+      yum install "$@"
+    fi
   else
     return 1
   fi

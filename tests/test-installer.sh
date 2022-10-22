@@ -14,19 +14,19 @@ main() {
 
   if test "$#" -gt 0 ; then
     while test "$#" -gt 0 ; do
-      run_installer "$1"
+      run_installer "$1" --listen
       shift
     done
   else
-    run_tests
+    run_tests "$@"
   fi
 
   report_results
 }
 
 run_tests() {
-  run_installer alpine:latest
-  run_installer ubuntu:latest
+  run_installer alpine:latest "$@"
+  run_installer ubuntu:latest "$@"
 }
 
 report_results() {
@@ -64,7 +64,7 @@ run_installer() {
   _log "[RUN INSTALLER]" "$docker_ref" sh install.sh
 
   set -o pipefail
-  if docker run --rm -it -v "$(pwd)":/app -w /app "$docker_ref" sh install.sh | tee "$(_log_to "$docker_ref")" ; then
+  if docker run --rm -it -v "$(pwd)":/app -w /app "$docker_ref" sh install.sh "$@" | tee "$(_log_to "$docker_ref")" ; then
     PASSED+=("$docker_ref")
   else
     FAILED+=("$docker_ref")
