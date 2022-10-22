@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Script to automate running install.sh on multiple platforms.
+# Script to automate running shonion.sh on multiple platforms.
 # Does not make any assertions.
 #
 
@@ -14,7 +14,7 @@ main() {
 
   if test "$#" -gt 0 ; then
     while test "$#" -gt 0 ; do
-      run_installer "$1" --listen
+      run_installer "$1"
       shift
     done
   else
@@ -61,10 +61,10 @@ run_installer() {
   local docker_ref="$1"
   shift
 
-  _log "[RUN INSTALLER]" "$docker_ref" sh install.sh
+  _log "[RUN INSTALLER]" "$docker_ref" sh shonion.sh
 
   set -o pipefail
-  if docker run --rm -it -v "$(pwd)":/app -w /app "$docker_ref" sh install.sh "$@" | tee "$(_log_to "$docker_ref")" ; then
+  if docker run --rm -it -v "$(pwd)":/app -w /app "$docker_ref" sh shonion.sh "$@" | tee "$(_log_to "$docker_ref")" ; then
     PASSED+=("$docker_ref")
   else
     FAILED+=("$docker_ref")

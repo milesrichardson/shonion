@@ -32,13 +32,16 @@ bash <(echo "BiGLoNGBase64StringForYouToCopyIyEvdXNyL2JpbY3QgIiRAIgo=" | base64 
 Paste that into a terminal somewhere else, pour yourself some Red Bull, and
 you'll end up in a stable shell session on the remote machine!
 
+When you're done, you could kill the server from your SSH session with by finding
+the PID (look for `sshd`), which is the foregrounded process in the tty that called it (usually a CI runner script), and once it stops the script should exit too. You could also just cancel the CI job. But be mindful of the fact that every minute in the shell is a minute the CI runner is active.
+
 ## How it works
 
 - **The CI machine** runs `./shonion.sh --listen` which:
 
-  - downloads and installs and dependencies required
-  - downloads the static `shonion` binary to `~/.shonion/shonion`
-  - runs the `shonion` binary in the background with default parameters to
+  - installs any dependencies required with OS package manager if it can find it
+  - downloads the static `shonion` binary from this repo to `~/.shonion/shonion`
+  - runs the `shonion` binary in the background with default parameters to:
     - run a SOCKS proxy on `127.0.0.1:19050`
     - create an Onion v3 service port forwarding `:34567` to `127.0.0.1:5678`
   - waits for connectivity to the Tor network including successful `.onion` connection back to itself
