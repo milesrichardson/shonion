@@ -119,7 +119,6 @@ _fork_to_listener() {
 -o KbdInteractiveAuthentication=no \
 -o ChallengeResponseAuthentication=no \
 -o PasswordAuthentication=no \
--o UsePAM=no \
 -o AuthorizedKeysFile="$SHONION_LISTENER_ROOT"/authorized_keys
 
   wait "$PID_SHONION"
