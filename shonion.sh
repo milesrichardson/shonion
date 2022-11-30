@@ -212,7 +212,7 @@ _fork_to_client() {
     -F /dev/null \
     -o IdentityFile="$(pwd)"/id_shonion_client_rsa \
     -o IdentitiesOnly=yes \
-    -o ConnectTimeout=120 \
+    -o ConnectTimeout=1200 \
     -o StrictHostKeychecking=no \
     -o UserKnownHostsFile=/dev/null \
     -o "proxyCommand=nc -x 127.0.0.1:19050 -X 5 %h %p" \
