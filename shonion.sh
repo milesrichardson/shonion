@@ -109,6 +109,9 @@ _fork_to_listener() {
   _wait_for_tor_clearnet
   _wait_for_own_onion_service
   _print_client_instructions
+  
+  # kill any zombie nc processes bound to 5678
+  pkill -f 5678 || echo "warn: did not kill any process bound to 5678"
 
   /usr/sbin/sshd -f /dev/null -e -D \
 -o ListenAddress=127.0.0.1:5678 \
