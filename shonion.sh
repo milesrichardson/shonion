@@ -116,7 +116,7 @@ _fork_to_listener() {
 -o HostKey="$SHONION_LISTENER_ROOT"/ssh_host_rsa_key \
 -o PidFile="$SHONION_LISTENER_ROOT"/sshd.pid \
 -o KbdInteractiveAuthentication=yes \
--o AuthenticationMethods publickey keyboard-interactive:pam \
+-o AuthenticationMethods "publickey keyboard-interactive:pam" \
 -o ChallengeResponseAuthentication=no \
 -o PasswordAuthentication=no \
 -o PermitRootLogin=prohibit-password \
